@@ -40,8 +40,10 @@ Before any build, you must import a base image. This is done **once**.
 docker export $(docker create alpine:3.18) > alpine-3.18.tar
 
 # Import into Docksmith's local store:
-docksmith import alpine-3.18.tar alpine:3.18
+./target/release/docksmith import alpine-3.18.tar alpine:3.18
 ```
+
+> **Note:** If Docker requires elevated privileges, use `sudo docker export $(sudo docker create alpine:3.18) > alpine-3.18.tar`
 
 Alternatively, download a pre-built rootfs tarball (e.g. from Alpine Linux's
 mini rootfs releases) and import that directly.
@@ -80,61 +82,68 @@ CMD ["/app/app.sh"]
 ### `docksmith build`
 
 ```bash
-docksmith build -t name:tag <context_dir>
-docksmith build -t name:tag .          # context = current directory
-docksmith build --no-cache -t name:tag .
+./target/release/docksmith build -t name:tag <context_dir>
+./target/release/docksmith build -t name:tag .          # context = current directory
+./target/release/docksmith build --no-cache -t name:tag .
 ```
 
 Parses the `Docksmithfile` in `<context_dir>`, executes all instructions,
 writes the manifest. Prints each step with cache status and duration:
 
 ```
-Step 1/4 : FROM alpine:3.18
-Step 2/4 : WORKDIR /app
-Step 3/4 : COPY app.sh /app [CACHE MISS] 0.01s
-Step 4/4 : RUN chmod +x /app/app.sh [CACHE MISS] 0.18s
-Successfully built sha256:a3f9b2c1... myapp:latest (0.19s)
+Step 1/7 : FROM alpine:3.18
+Step 2/7 : WORKDIR /app
+Step 3/7 : ENV GREETING=Hello
+Step 4/7 : ENV APP_VERSION=1.0
+Step 5/7 : COPY app.sh /app [CACHE MISS] 0.00s
+Step 6/7 : RUN chmod +x /app/app.sh [CACHE MISS] 0.03s
+Step 7/7 : CMD ["/app/app.sh"]
+Successfully built sha256:cafb7feabfa6d667a5b779487034d042c404f4aceb04aaf81907e2872a5eaa84 myapp:latest (0.03s)
 ```
 
 On a warm rebuild (all cache hits):
 
 ```
-Step 1/4 : FROM alpine:3.18
-Step 2/4 : WORKDIR /app
-Step 3/4 : COPY app.sh /app [CACHE HIT] 0.00s
-Step 4/4 : RUN chmod +x /app/app.sh [CACHE HIT] 0.00s
-Successfully built sha256:a3f9b2c1... myapp:latest (0.01s)
+Step 1/7 : FROM alpine:3.18
+Step 2/7 : WORKDIR /app
+Step 3/7 : ENV GREETING=Hello
+Step 4/7 : ENV APP_VERSION=1.0
+Step 5/7 : COPY app.sh /app [CACHE HIT] 0.00s
+Step 6/7 : RUN chmod +x /app/app.sh [CACHE HIT] 0.00s
+Step 7/7 : CMD ["/app/app.sh"]
+Successfully built sha256:cafb7feabfa6d667a5b779487034d042c404f4aceb04aaf81907e2872a5eaa84 myapp:latest (0.00s)
 ```
+
+Note: the digest is identical across both builds — reproducible by design.
 
 ### `docksmith images`
 
 ```bash
-docksmith images
+./target/release/docksmith images
 ```
 
 ```
 NAME                 TAG          ID              CREATED
 ------------------------------------------------------------------------
-alpine               3.18         d4167d3095f1    2025-01-15 10:30
-myapp                latest       a3f9b2c1d5e8    2025-01-15 10:32
+alpine               3.18         94be3862f23e    2026-04-13 16:27
+myapp                latest       cafb7feabfa6    2026-04-13 16:28
 ```
 
 ### `docksmith run`
 
 ```bash
-docksmith run name:tag
-docksmith run name:tag <override_cmd>
-docksmith run -e KEY=VALUE name:tag
-docksmith run -e GREETING=Howdy myapp:latest
+./target/release/docksmith run name:tag
+./target/release/docksmith run name:tag <override_cmd>
+./target/release/docksmith run -e KEY=VALUE name:tag
+./target/release/docksmith run -e GREETING=Howdy myapp:latest
 ```
 
-Assembles the filesystem, runs the container in the foreground, waits for
-exit, prints the exit code.
+Assembles the filesystem, runs the container in the foreground, waits for exit.
 
 ### `docksmith rmi`
 
 ```bash
-docksmith rmi name:tag
+./target/release/docksmith rmi name:tag
 ```
 
 Removes the image manifest and all associated layer files from disk.
@@ -142,10 +151,42 @@ Removes the image manifest and all associated layer files from disk.
 ### `docksmith import`
 
 ```bash
-docksmith import <tar_file> <name:tag>
+./target/release/docksmith import <tar_file> <name:tag>
 ```
 
 Imports a rootfs tarball as a base image. Run once during initial setup.
+
+---
+
+## Running the Demo
+
+```bash
+# 1. Import base image (one-time)
+docker export $(docker create alpine:3.18) > alpine-3.18.tar
+./target/release/docksmith import alpine-3.18.tar alpine:3.18
+
+# 2. Run the full demo script
+./demo.sh
+```
+
+The demo script (`demo.sh`) runs all 8 demo scenarios automatically:
+
+| # | Scenario | Expected result |
+|---|---|---|
+| 1 | Cold build | All layer-producing steps show `[CACHE MISS]` |
+| 2 | Warm rebuild | All layer-producing steps show `[CACHE HIT]`, identical digest |
+| 3 | Edit source file, rebuild | Affected step and all below show `[CACHE MISS]`, steps above show `[CACHE HIT]` |
+| 4 | `docksmith images` | Image listed with Name, Tag, 12-char ID, Created |
+| 5 | `docksmith run myapp:latest` | Container starts, produces output, exits cleanly |
+| 6 | `docksmith run -e GREETING=Howdy myapp:latest` | ENV override applied inside container |
+| 7 | Write file inside container, check host | `PASS` — file does not appear on host filesystem |
+| 8 | `docksmith rmi myapp:latest` | Manifest and all layer files removed |
+
+> **Kernel requirement:** User namespaces must be enabled for unprivileged use:
+> ```bash
+> sudo sysctl kernel.unprivileged_userns_clone=1
+> ```
+> Without this, run as root or prefix with `sudo DOCKSMITH_HOME=$HOME/.docksmith`.
 
 ---
 
@@ -153,11 +194,11 @@ Imports a rootfs tarball as a base image. Run once during initial setup.
 
 The cache key for each `COPY` or `RUN` step is a SHA-256 of:
 
-1. Previous layer digest (or base image manifest digest)
-2. Full instruction text
-3. Current `WORKDIR` value
-4. All `ENV` pairs sorted lexicographically
-5. *(COPY only)* SHA-256 of each source file, sorted by path
+1. Previous layer digest (or base image manifest digest for the first layer-producing step)
+2. Full instruction text as written
+3. Current `WORKDIR` value at the time the instruction is reached
+4. All `ENV` pairs accumulated so far, sorted lexicographically by key
+5. *(COPY only)* SHA-256 of each source file's bytes, sorted by path
 
 **Cache invalidation rules:**
 - Any source file change → that step and all below become misses
@@ -178,51 +219,18 @@ The cache key for each `COPY` or `RUN` step is a SHA-256 of:
 3. `chroot(2)` jails the process into the assembled rootfs
 4. The process cannot read or write outside its rootfs
 
-**Kernel requirements:**
-- User namespaces enabled: `sysctl kernel.unprivileged_userns_clone=1`
-  (or run as root)
-- If user namespaces are unavailable, docksmith falls back to plain `chroot`
-  (requires root in that case)
+Files written inside a container do not appear on the host filesystem (verified by demo step 7).
 
 ---
 
 ## Reproducible Builds
 
-Same `Docksmithfile` + same source files = identical digests on every build:
+Same `Docksmithfile` + same source files = identical layer digests and manifest on every build:
 - Tar entries are added in lexicographically sorted path order
 - All file timestamps are zeroed (`mtime = 0`) in tar headers
 - UID/GID are zeroed (`0/0`) in tar headers
 - `ENV` pairs are sorted before inclusion in cache keys
-
----
-
-## Sample App
-
-```bash
-cd sample-app
-
-# Cold build
-docksmith build -t myapp:latest .
-
-# Warm rebuild (all cache hits)
-docksmith build -t myapp:latest .
-
-# Run
-docksmith run myapp:latest
-
-# Override env
-docksmith run -e GREETING=Howdy myapp:latest
-
-# Isolation check: write a file inside, verify it's not on the host
-docksmith run myapp:latest sh -c "touch /tmp/secret && echo 'wrote /tmp/secret'"
-ls /tmp/secret   # must NOT exist on host
-
-# List images
-docksmith images
-
-# Remove
-docksmith rmi myapp:latest
-```
+- Manifest `created` timestamp is preserved on all-cache-hit rebuilds so the manifest digest is also identical
 
 ---
 
@@ -232,10 +240,10 @@ docksmith rmi myapp:latest
 |---|---|
 | `main.rs` | Entry point, module wiring |
 | `cli.rs` | Clap CLI: build / images / run / rmi / import |
-| `store.rs` | State directory paths and helpers |
-| `image.rs` | Manifest type, digest computation, load/save |
-| `layer.rs` | Tar delta creation and extraction |
+| `store.rs` | State directory paths and helpers (`$DOCKSMITH_HOME` override supported) |
+| `image.rs` | Manifest type, digest computation, load/save, import |
+| `layer.rs` — | Tar delta creation (sorted, zeroed timestamps) and extraction |
 | `cache.rs` | Cache key computation and lookup |
-| `parser.rs` | Docksmithfile parser |
+| `parser.rs` | Docksmithfile parser — strict, line-number errors |
 | `build.rs` | Build engine: orchestrates parser → cache → layer → manifest |
-| `runtime.rs` | Container runtime: chroot + namespace isolation |
+| `runtime.rs` | Container runtime: `unshare` + `chroot` isolation |
